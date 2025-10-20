@@ -1,142 +1,246 @@
 import os
-import io
-from flask import Flask, render_template, request, jsonify, send_from_directory
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_from_directory
+from flask_sqlalchemy import SQLAlchemy
+from flask_login import LoginManager, login_user, login_required, logout_user, current_user, UserMixin
+from werkzeug.security import generate_password_hash, check_password_hash
+from datetime import datetime
 from PyPDF2 import PdfReader
-import requests
 import openai
+import uuid
+
+# Config
+BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+DB_PATH = f"sqlite:///{os.path.join(BASE_DIR, 'emotionix.db')}"
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
+app.config['SECRET_KEY'] = os.getenv("FLASK_SECRET", "dev-secret-key-change-this")
+app.config['SQLALCHEMY_DATABASE_URI'] = DB_PATH
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-# Load API key from env if present
+db = SQLAlchemy(app)
+login_manager = LoginManager(app)
+login_manager.login_view = "login"
+
+# OpenAI setup (optional)
 OPENAI_KEY = os.getenv("OPENAI_API_KEY")
 if OPENAI_KEY:
     openai.api_key = OPENAI_KEY
 
-# Simple fallback "thinking" function (rule-based) if OpenAI is not configured
-def fallback_generate_response(prompt, emotion=None, role="general"):
-    # Very simple heuristics: if question contains "explain", "how", "why" -> longer answer.
-    base = ""
-    if "explain" in prompt.lower() or "how" in prompt.lower() or "why" in prompt.lower():
-        base = ("Here's a clear explanation:\n\n" +
-                "1) State the concept simply.\n2) Provide an example.\n3) Summarize key points.")
-    else:
-        base = "Short answer: " + (prompt[:200] + ("..." if len(prompt) > 200 else ""))
+### Database models
+class User(db.Model, UserMixin):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    password_hash = db.Column(db.String(256), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-    # Adjust tone slightly by detected emotion
-    if emotion == "sad":
-        tone = "\n\nI sense you might be feeling down — I'll keep this gentle and encouraging."
-    elif emotion == "angry":
-        tone = "\n\nI sense frustration — I'll be direct and concise."
-    elif emotion == "happy":
-        tone = "\n\nNice! Here's a friendly answer with examples."
-    else:
-        tone = ""
+class Chat(db.Model):
+    id = db.Column(db.String(36), primary_key=True)  # uuid
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    title = db.Column(db.String(200), nullable=False)
+    ai_mode = db.Column(db.String(50), default="emotionix")
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-    return base + tone
+class Message(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    chat_id = db.Column(db.String(36), db.ForeignKey('chat.id'), nullable=False)
+    role = db.Column(db.String(10))  # 'user' or 'assistant' or 'system'
+    content = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-# If OPENAI_KEY present, use it for better responses
-def openai_generate(prompt, emotion=None, role="general"):
+# Create DB
+with app.app_context():
+    db.create_all()
+
+@login_manager.user_loader
+def load_user(user_id):
+    return User.query.get(int(user_id))
+
+### Utility: fallback generator (simple)
+def fallback_generate(prompt, ai_mode="emotionix", board=None, grade=None):
+    # Simple dynamic generation: not pre-canned. Use heuristics to expand prompt.
+    p = prompt.strip()
+    if ai_mode == "alphaStudy":
+        prefix = f"(Alpha Study AI for {board or 'Generic Board'}, grade {grade or 'N/A'}) "
+        return prefix + f"\nSummary: {p[:500]}.\nExplanation: Break it into simple steps and give an example."
+    if ai_mode == "alphaExam":
+        return f"Exam on: {p}\n1) Define the topic.\n2) Short question.\n3) Long question."
+    # emotionix general
+    return f"I understand: {p}\nHere's an empathetic answer: try reframing, examples, and a short action step."
+
+### Utility: OpenAI wrapper (chat)
+def openai_chat(messages, model="gpt-3.5-turbo", max_tokens=512, temperature=0.6):
     if not OPENAI_KEY:
-        return fallback_generate_response(prompt, emotion=emotion, role=role)
-
-    system_prompt = "You are Emotionix, an empathetic assistant that adapts tone to detected user emotion."
-    if role == "alpha_study":
-        system_prompt = "You are Alpha Study AI: helpful tutor. Ask clarifying q's when needed, adapt to board and grade info."
-
-    # minor tone guidance
-    if emotion == "sad":
-        system_prompt += " Keep the tone gentle and encouraging."
-    elif emotion == "angry":
-        system_prompt += " Be concise and direct."
-    elif emotion == "happy":
-        system_prompt += " Keep the tone upbeat and positive."
-
+        return None
     try:
-        resp = openai.ChatCompletion.create(
-            model="gpt-4o-mini",  # change to a model you have access to; or "gpt-4" / "gpt-3.5-turbo"
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=600,
-            temperature=0.6,
-        )
+        resp = openai.ChatCompletion.create(model=model, messages=messages, temperature=temperature, max_tokens=max_tokens)
         return resp["choices"][0]["message"]["content"].strip()
     except Exception as e:
-        # Failback
-        return fallback_generate_response(prompt, emotion=emotion, role=role) + f"\n\n(Note: OpenAI call failed: {e})"
+        app.logger.error("OpenAI call failed: %s", e)
+        return None
 
+### Routes - Auth
+@app.route("/signup", methods=["GET","POST"])
+def signup():
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "").strip()
+        if not username or not password:
+            flash("Username and password required", "danger")
+            return redirect(url_for("signup"))
+        if User.query.filter_by(username=username).first():
+            flash("Username already exists", "danger")
+            return redirect(url_for("signup"))
+        user = User(username=username, password_hash=generate_password_hash(password))
+        db.session.add(user)
+        db.session.commit()
+        login_user(user)
+        flash("Account created", "success")
+        return redirect(url_for("index"))
+    return render_template("signup.html")
+
+@app.route("/login", methods=["GET","POST"])
+def login():
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "").strip()
+        user = User.query.filter_by(username=username).first()
+        if not user or not check_password_hash(user.password_hash, password):
+            flash("Invalid credentials", "danger")
+            return redirect(url_for("login"))
+        login_user(user)
+        flash("Logged in", "success")
+        return redirect(url_for("index"))
+    return render_template("login.html")
+
+@app.route("/logout")
+@login_required
+def logout():
+    logout_user()
+    flash("Logged out", "info")
+    return redirect(url_for("login"))
+
+### Main UI
 @app.route("/")
+@login_required
 def index():
-    return render_template("index.html")
+    # load user's chats
+    chats = Chat.query.filter_by(user_id=current_user.id).order_by(Chat.created_at.desc()).all()
+    return render_template("dashboard.html", chats=chats)
 
+### Create new chat
+@app.route("/chats/new", methods=["POST"])
+@login_required
+def new_chat():
+    ai_mode = request.form.get("ai_mode", "emotionix")
+    title = request.form.get("title") or f"New chat ({ai_mode})"
+    chat_id = str(uuid.uuid4())
+    chat = Chat(id=chat_id, user_id=current_user.id, title=title, ai_mode=ai_mode)
+    db.session.add(chat)
+    db.session.commit()
+    # system message for context
+    sys_msg = Message(chat_id=chat_id, role="system", content=f"AI mode:{ai_mode}")
+    db.session.add(sys_msg)
+    db.session.commit()
+    return redirect(url_for("view_chat", chat_id=chat_id))
+
+### View chat
+@app.route("/chats/<chat_id>")
+@login_required
+def view_chat(chat_id):
+    chat = Chat.query.filter_by(id=chat_id, user_id=current_user.id).first_or_404()
+    messages = Message.query.filter_by(chat_id=chat_id).order_by(Message.created_at).all()
+    return render_template("chat.html", chat=chat, messages=messages)
+
+### API endpoint to send a message and get AI response (sync)
 @app.route("/api/chat", methods=["POST"])
+@login_required
 def api_chat():
     data = request.json or {}
-    prompt = data.get("prompt", "")
-    emotion = data.get("emotion")  # expected: 'happy', 'sad', 'angry', etc or None
-    role = data.get("role", "general")
-    if not prompt:
-        return jsonify({"error": "No prompt provided"}), 400
+    chat_id = data.get("chat_id")
+    prompt = data.get("prompt", "").strip()
+    emotion = data.get("emotion")  # optional
+    ai_mode = data.get("ai_mode", "emotionix")
+    board = data.get("board")
+    grade = data.get("grade")
 
-    answer = openai_generate(prompt, emotion=emotion, role=role)
-    return jsonify({"answer": answer})
+    if not chat_id or not prompt:
+        return jsonify({"error":"missing chat_id or prompt"}), 400
 
-@app.route("/api/alpha_study", methods=["POST"])
-def api_alpha_study():
-    data = request.json or {}
-    board = data.get("board", "Generic Board")
-    grade = data.get("grade", "Grade")
-    prompt = data.get("prompt", "")
-    emotion = data.get("emotion")
-    if not prompt:
-        return jsonify({"error": "No prompt"}), 400
+    # Save user message
+    user_msg = Message(chat_id=chat_id, role="user", content=prompt)
+    db.session.add(user_msg)
+    db.session.commit()
 
-    # prepend context about board & grade
-    full_prompt = f"You are Alpha Study AI for {board}, {grade}. Student asks: {prompt}\nGive an answer targeted to {grade} level, explain step-by-step and give 1 example if appropriate."
-    answer = openai_generate(full_prompt, emotion=emotion, role="alpha_study")
-    return jsonify({"answer": answer})
+    # Build messages for OpenAI
+    system_text = f"You are {ai_mode}. Be helpful and adapt tone to user's emotion: {emotion or 'neutral'}."
+    if ai_mode == "alphaStudy":
+        system_text += f" Student board: {board or 'any'}. Grade: {grade or 'any'}."
 
-@app.route("/api/generate_exam", methods=["POST"])
-def api_generate_exam():
-    # Accept either raw text in JSON or a PDF upload multipart/form-data
-    if request.content_type and "application/json" in request.content_type:
-        data = request.json or {}
-        text = data.get("text", "")
-        topic = data.get("topic", "Exam")
-        num_questions = int(data.get("num_questions", 10))
+    # Fetch prior conversation (up to some messages)
+    prior = Message.query.filter_by(chat_id=chat_id).order_by(Message.created_at).all()
+    messages_for_api = [{"role": m.role, "content": m.content} for m in prior]
+
+    # Ensure a system message at the start
+    if not any(m['role']=="system" for m in messages_for_api):
+        messages_for_api.insert(0, {"role":"system","content":system_text})
     else:
-        # Expect file
-        text = ""
-        topic = request.form.get("topic", "Exam")
-        num_questions = int(request.form.get("num_questions", 10))
-        if 'file' in request.files:
-            f = request.files['file']
-            if f.mimetype == "application/pdf" or f.filename.lower().endswith(".pdf"):
-                reader = PdfReader(f.stream)
-                pages_text = []
-                for p in reader.pages:
-                    pages_text.append(p.extract_text() or "")
-                text = "\n\n".join(pages_text)
-            else:
-                # attempt to read as text
-                text = f.read().decode("utf-8", errors="ignore")
+        # update existing system
+        for m in messages_for_api:
+            if m['role']=="system":
+                m['content'] = system_text
+                break
+
+    # Add latest user message
+    messages_for_api.append({"role":"user","content":prompt})
+
+    # Try OpenAI
+    ai_response_text = openai_chat(messages_for_api, model="gpt-3.5-turbo", temperature=0.7) if OPENAI_KEY else None
+    if not ai_response_text:
+        ai_response_text = fallback_generate(prompt, ai_mode=ai_mode, board=board, grade=grade)
+
+    # Save assistant message
+    assistant_msg = Message(chat_id=chat_id, role="assistant", content=ai_response_text)
+    db.session.add(assistant_msg)
+    db.session.commit()
+
+    return jsonify({"answer": ai_response_text})
+
+### Generate exam from PDF or text
+@app.route("/api/generate_exam", methods=["POST"])
+@login_required
+def api_generate_exam():
+    topic = request.form.get("topic") or "Exam"
+    num_q = int(request.form.get("num_questions") or 10)
+    text = request.form.get("text", "")
+
+    # If file uploaded
+    if 'file' in request.files:
+        f = request.files['file']
+        if f and (f.filename.lower().endswith(".pdf")):
+            reader = PdfReader(f.stream)
+            pages = []
+            for p in reader.pages:
+                pages.append(p.extract_text() or "")
+            text = "\n\n".join(pages)
 
     if not text.strip():
-        return jsonify({"error": "No text or pdf content supplied"}), 400
+        return jsonify({"error":"no text or pdf provided"}), 400
 
-    # Compose prompt for generating a question paper
-    prompt = (f"Generate an exam paper titled '{topic}'. Create {num_questions} questions across "
-              "Question types: 20% MCQ, 30% Short answer, 50% long-answer. Indicate marks for each "
-              "question and include an answer key. Use the following source material:\n\n" + text[:4000])
-    # Note: trimming text to 4000 chars to keep prompt reasonable; you can change strategy in production.
-    exam = openai_generate(prompt, emotion=None, role="alpha_exam")
-    return jsonify({"exam": exam})
+    prompt = f"Create an exam paper on '{topic}' with {num_q} questions from the following material:\n\n{text[:4000]}"
+    # call openai
+    answer = None
+    if OPENAI_KEY:
+        messages = [{"role":"system","content":"You are Alpha Exam AI that generates clear exam papers with marks and answer key."},
+                    {"role":"user","content":prompt}]
+        answer = openai_chat(messages, model="gpt-3.5-turbo", max_tokens=1200)
+    if not answer:
+        answer = fallback_generate(topic, ai_mode="alphaExam") + "\n\nSource excerpt:\n" + text[:800]
+    return jsonify({"exam": answer})
 
-@app.route("/static/<path:path>")
-def static_proxy(path):
-    return send_from_directory("static", path)
+### Static (favicon)
+@app.route('/favicon.ico')
+def favicon():
+    return send_from_directory(os.path.join(app.root_path, 'static'), 'favicon.ico')
 
 if __name__ == "__main__":
-    # for local dev only
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)), debug=True)
