@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="app">
+  <aside class="sidebar">
+    <h2 id="sidebarTitle">Emotionix</h2>
+    <div class="menu">
+      <a class="menu-item" href="#" onclick="createNewChat('emotionix')">+ New Chat</a>
+      {% for chat in chats %}
+        <a class="chat-link" href="{{ url_for('view_chat', chat_id=chat.id) }}">
+          {{ chat.title }} <small class="muted">{{ chat.ai_mode }}</small>
+        </a>
+      {% endfor %}
+    </div>
+    <div class="bottom">
+      <p>Signed in as <strong>{{ current_user.username }}</strong></p>
+      <p><a href="{{ url_for('logout') }}">Logout</a></p>
+    </div>
+  </aside>
+
+  <main class="main-panel">
+    <div class="empty-state">
+      <h3>Welcome, {{ current_user.username }}.</h3>
+      <p>Create a new chat to start talking with Emotionix or choose one from the left.</p>
+      <div class="preset-row">
+        <button onclick="createNewChat('emotionix')">Emotionix</button>
+        <button onclick="createNewChat('alphaStudy')">Alpha Study AI</button>
+        <button onclick="createNewChat('alphaExam')">Alpha Exam AI</button>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+  function createNewChat(mode) {
+    // Submit a form to /chats/new
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = '/chats/new';
+    const ai = document.createElement('input');
+    ai.type = 'hidden'; ai.name = 'ai_mode'; ai.value = mode;
+    form.appendChild(ai);
+    document.body.appendChild(form);
+    form.submit();
+  }
+</script>
+{% endblock %}

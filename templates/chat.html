@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="app">
+  <aside class="sidebar">
+    <h2 id="sidebarTitle">{{ chat.title }}</h2>
+    <div class="menu">
+      <a class="menu-item" onclick="location.href='{{ url_for('index') }}'">Back</a>
+      <a class="menu-item" onclick="createNewChat('{{ chat.ai_mode }}')">New Chat ({{ chat.ai_mode }})</a>
+      <a class="menu-item" href="{{ url_for('index') }}">All chats</a>
+    </div>
+    <div class="bottom">
+      <p>Signed in as <strong>{{ current_user.username }}</strong></p>
+      <p><a href="{{ url_for('logout') }}">Logout</a></p>
+    </div>
+  </aside>
+
+  <main class="main-panel">
+    <header class="chat-header">
+      <h1 id="headerTitle">{{ chat.title }}</h1>
+      <div>
+        <select id="aiModeSelect" onchange="setAIMode(this.value)">
+          <option value="emotionix" {% if chat.ai_mode=='emotionix' %}selected{% endif %}>Emotionix</option>
+          <option value="alphaStudy" {% if chat.ai_mode=='alphaStudy' %}selected{% endif %}>Alpha Study AI</option>
+          <option value="alphaExam" {% if chat.ai_mode=='alphaExam' %}selected{% endif %}>Alpha Exam AI</option>
+        </select>
+      </div>
+    </header>
+
+    <div id="chatWindow" class="chat-window">
+      {% for m in messages %}
+        <div class="message {{ 'user' if m.role=='user' else ( 'bot' if m.role=='assistant' else 'system') }}">
+          {{ m.content|replace('\n','<br>')|safe }}
+        </div>
+      {% endfor %}
+    </div>
+
+    <div class="chat-input">
+      <input id="promptInput" placeholder="Type your message..." onkeypress="if(event.key==='Enter') sendMessage()">
+      <button onclick="sendMessage()">Send</button>
+    </div>
+  </main>
+</div>
+
+<script>
+  const chatId = "{{ chat.id }}";
+  let aiMode = "{{ chat.ai_mode }}";
+
+  function setAIMode(mode){
+    aiMode = mode;
+    // optional: call backend to change chat.ai_mode (not implemented server-side)
+    document.getElementById('headerTitle').innerText = mode;
+  }
+
+  async function sendMessage(){
+    const input = document.getElementById('promptInput');
+    const prompt = input.value.trim();
+    if(!prompt) return;
+    appendUserMsg(prompt);
+    input.value = '';
+
+    // detect emotion from client if you have detection; for now none
+    const emotion = null;
+
+    const res = await fetch('/api/chat', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({chat_id: chatId, prompt, emotion, ai_mode: aiMode})
+    });
+    const data = await res.json();
+    if(data.answer) appendBotMsg(data.answer);
+    else appendBotMsg("[Error receiving answer]");
+  }
+
+  function appendUserMsg(text){
+    const w = document.getElementById('chatWindow');
+    const d = document.createElement('div'); d.className='message user'; d.innerText = text;
+    w.appendChild(d); w.scrollTop = w.scrollHeight;
+  }
+  function appendBotMsg(text){
+    const w = document.getElementById('chatWindow');
+    const d = document.createElement('div'); d.className='message bot'; d.innerHTML = text.replace(/\n/g,'<br>');
+    w.appendChild(d); w.scrollTop = w.scrollHeight;
+  }
+
+  function createNewChat(mode){
+    const f = document.createElement('form'); f.method='POST'; f.action='/chats/new';
+    const i = document.createElement('input'); i.type='hidden'; i.name='ai_mode'; i.value = mode;
+    f.appendChild(i); document.body.appendChild(f); f.submit();
+  }
+</script>
+{% endblock %}
