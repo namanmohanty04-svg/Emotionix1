@@ -9,23 +9,25 @@
 <body>
   <!-- Sidebar -->
   <div class="sidebar">
-    <h2>Emotionix</h2>
+    <h2 id="sidebarTitle">Emotionix</h2>
     <div class="menu">
-      <button class="menu-item active">Main Chat</button>
+      <button class="menu-item active" onclick="switchAI('emotionix')">Main Chat</button>
       <button class="menu-item" onclick="switchAI('alphaStudy')">Alpha Study AI</button>
       <button class="menu-item" onclick="switchAI('alphaExam')">Alpha Exam AI</button>
     </div>
+
     <div class="bottom">
-      <p class="username">👤 Naman (Free)</p>
+      <p class="login-text">🔐 <a href="#" class="login-link">Login</a> | <a href="#" class="login-link">Sign Up</a></p>
+      <p class="username">👤 Guest User</p>
     </div>
   </div>
 
-  <!-- Main Chat Container -->
+  <!-- Main Chat -->
   <div class="chat-container">
     <header class="chat-header">
-      <h1>Emotionix</h1>
+      <h1 id="headerTitle">Emotionix</h1>
       <select id="aiMode" class="ai-select" onchange="changeMode()">
-        <option value="main">Emotionix</option>
+        <option value="emotionix">Emotionix</option>
         <option value="alphaStudy">Alpha Study AI</option>
         <option value="alphaExam">Alpha Exam AI</option>
       </select>
@@ -42,17 +44,30 @@
   </div>
 
   <script>
-    let aiMode = "main";
+    let aiMode = "emotionix";
 
     function switchAI(mode) {
       aiMode = mode;
       document.getElementById('aiMode').value = mode;
-      addBotMessage(`Switched to ${mode === 'alphaStudy' ? 'Alpha Study AI 📚' : 'Alpha Exam AI 🧠'}`);
+
+      const aiName = getAIName(mode);
+      document.getElementById('headerTitle').textContent = aiName;
+      document.getElementById('sidebarTitle').textContent = aiName;
+
+      document.querySelectorAll(".menu-item").forEach(btn => btn.classList.remove("active"));
+      document.querySelector(`.menu-item[onclick="switchAI('${mode}')"]`).classList.add("active");
+
+      addBotMessage(`🔄 Switched to ${aiName}`);
+    }
+
+    function getAIName(mode) {
+      if (mode === "alphaStudy") return "Alpha Study AI 📚";
+      if (mode === "alphaExam") return "Alpha Exam AI 🧠";
+      return "Emotionix 💬";
     }
 
     function changeMode() {
-      aiMode = document.getElementById('aiMode').value;
-      addBotMessage(`You’re now chatting with ${aiMode === 'alphaStudy' ? 'Alpha Study AI 📚' : aiMode === 'alphaExam' ? 'Alpha Exam AI 🧠' : 'Emotionix 💬'}`);
+      switchAI(document.getElementById('aiMode').value);
     }
 
     function handleKey(event) {
@@ -65,7 +80,7 @@
       if (!message) return;
       addUserMessage(message);
       input.value = "";
-      setTimeout(() => simulateResponse(message), 800);
+      simulateResponse(message);
     }
 
     function addUserMessage(text) {
@@ -86,16 +101,29 @@
       chat.scrollTop = chat.scrollHeight;
     }
 
+    // Simulate responses for each AI mode
     function simulateResponse(userMessage) {
       let reply;
-      if (aiMode === "alphaStudy") {
-        reply = "📘 Let’s focus on your studies. What board and grade are you in?";
-      } else if (aiMode === "alphaExam") {
-        reply = "🧩 Please upload your topic or PDF — I’ll generate an exam paper for you!";
-      } else {
-        reply = "💬 That’s interesting! Tell me more.";
+
+      if (aiMode === "emotionix") {
+        const replies = [
+          "💬 That sounds interesting. Tell me more!",
+          "😊 I’m here for you — how are you feeling about that?",
+          "💖 That must be tough, but you’re doing great.",
+          "😄 I love hearing from you! What’s on your mind?"
+        ];
+        reply = replies[Math.floor(Math.random() * replies.length)];
       }
-      addBotMessage(reply);
+
+      else if (aiMode === "alphaStudy") {
+        reply = `📘 Searching study materials for “${userMessage}”...\nFound a helpful summary: “${userMessage} is a key concept involving deep understanding of related topics. Let’s dive into examples!”`;
+      }
+
+      else if (aiMode === "alphaExam") {
+        reply = `🧩 Generating a quick exam based on “${userMessage}”:\n1️⃣ Define ${userMessage}.\n2️⃣ Explain its importance.\n3️⃣ Give one real-life example.`;
+      }
+
+      setTimeout(() => addBotMessage(reply), 800);
     }
   </script>
 </body>
