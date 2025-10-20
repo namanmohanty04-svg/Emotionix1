@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Emotionix</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- face-api.js for client-side emotion detection -->
+  <script defer src="https://unpkg.com/face-api.js@0.22.2/dist/face-api.min.js"></script>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body class="bg-slate-50 text-slate-900">
+  <div class="max-w-6xl mx-auto p-6">
+    <header class="flex items-center justify-between mb-6">
+      <h1 class="text-3xl font-bold">Emotionix</h1>
+      <div>
+        <button id="open-student" class="px-4 py-2 bg-indigo-600 text-white rounded">Student Section</button>
+      </div>
+    </header>
+
+    <main class="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <!-- Left: Emotion panel -->
+      <section class="col-span-1 bg-white rounded-lg shadow p-4">
+        <h2 class="font-semibold mb-2">Emotion Detection</h2>
+        <p class="text-sm text-slate-600 mb-2">Allow camera to let Emotionix detect your facial emotion and adapt tone.</p>
+        <video id="video" width="240" height="180" autoplay muted playsinline class="rounded border"></video>
+        <div id="detected" class="mt-3 text-lg font-medium">Detected: <span id="detected-emotion">—</span></div>
+        <div class="mt-3">
+          <button id="start-cam" class="px-3 py-2 bg-green-600 text-white rounded">Start Camera</button>
+          <button id="stop-cam" class="px-3 py-2 bg-red-600 text-white rounded ml-2">Stop</button>
+        </div>
+      </section>
+
+      <!-- Middle: Chat -->
+      <section class="col-span-1 md:col-span-2 bg-white rounded-lg shadow p-4 flex flex-col">
+        <div class="flex-1 mb-4" id="chatbox" style="max-height: 60vh; overflow:auto;">
+          <!-- messages inserted here -->
+        </div>
+
+        <form id="chat-form" class="flex gap-2">
+          <input id="prompt" type="text" class="flex-1 border rounded px-3 py-2" placeholder="Ask anything..." />
+          <button class="px-4 py-2 bg-indigo-600 text-white rounded">Send</button>
+        </form>
+
+        <div class="mt-3 text-sm text-slate-500">Tip: Emotionix will adapt the tone of responses to the detected emotion.</div>
+      </section>
+    </main>
+
+    <!-- Student modal -->
+    <div id="student-modal" class="fixed inset-0 bg-black/40 hidden items-center justify-center">
+      <div class="bg-white rounded-lg p-6 w-11/12 md:w-3/4 max-h-[90vh] overflow-auto">
+        <div class="flex justify-between items-center mb-4">
+          <h2 class="text-xl font-semibold">Student Section — Alpha Study & Alpha Exam</h2>
+          <button id="close-student" class="text-red-600">Close</button>
+        </div>
+
+        <div class="grid md:grid-cols-2 gap-4">
+          <!-- Alpha Study -->
+          <div class="p-4 border rounded">
+            <h3 class="font-medium">Alpha Study AI</h3>
+            <div class="mt-2">
+              <label class="block text-sm">Board</label>
+              <select id="board" class="border px-2 py-1 w-full">
+                <option>CBSE</option><option>ICSE</option><option>State Board</option><option>IGCSE</option><option>Other</option>
+              </select>
+            </div>
+            <div class="mt-2">
+              <label class="block text-sm">Grade</label>
+              <select id="grade" class="border px-2 py-1 w-full">
+                <option>6</option><option>7</option><option>8</option><option>9</option><option>10</option><option>11</option><option>12</option>
+              </select>
+            </div>
+            <div class="mt-2">
+              <textarea id="study-question" class="w-full border p-2" rows="4" placeholder="Ask a study question..."></textarea>
+            </div>
+            <div class="mt-2">
+              <button id="ask-study" class="px-3 py-2 bg-indigo-600 text-white rounded">Ask Alpha Study AI</button>
+            </div>
+            <div id="study-answer" class="mt-3 p-2 bg-slate-50 rounded"></div>
+          </div>
+
+          <!-- Alpha Exam -->
+          <div class="p-4 border rounded">
+            <h3 class="font-medium">Alpha Exam AI</h3>
+            <div class="mt-2">
+              <label class="block text-sm">Topic / Title</label>
+              <input id="exam-topic" type="text" class="w-full border px-2 py-1" placeholder="Topic or chapter name" />
+            </div>
+            <div class="mt-2">
+              <label class="block text-sm">Number of questions</label>
+              <input id="exam-num" type="number" class="w-full border px-2 py-1" value="10" />
+            </div>
+            <div class="mt-2">
+              <label class="block text-sm">Upload PDF (optional)</label>
+              <input id="exam-file" type="file" accept=".pdf,.txt" class="w-full" />
+            </div>
+            <div class="mt-2">
+              <button id="generate-exam" class="px-3 py-2 bg-emerald-600 text-white rounded">Generate Exam</button>
+            </div>
+            <pre id="exam-output" class="mt-3 p-3 bg-slate-50 rounded overflow-auto" style="max-height:250px;"></pre>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    // Simple UI logic and connection to backend
+    let detectedEmotion = null;
+    const video = document.getElementById('video');
+    const detectedEl = document.getElementById('detected-emotion');
+
+    // chat helpers
+    function appendMessage(role, text) {
+      const box = document.createElement('div');
+      box.className = role === 'user' ? 'text-right mb-3' : 'text-left mb-3';
+      box.innerHTML = `<div class="${role === 'user' ? 'inline-block bg-indigo-600 text-white px-4 py-2 rounded' : 'inline-block bg-slate-100 px-4 py-2 rounded'}">${text.replace(/\n/g,'<br>')}</div>`;
+      document.getElementById('chatbox').appendChild(box);
+      document.getElementById('chatbox').scrollTop = document.getElementById('chatbox').scrollHeight;
+    }
+
+    document.getElementById('chat-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const prompt = document.getElementById('prompt').value.trim();
+      if(!prompt) return;
+      appendMessage('user', prompt);
+      document.getElementById('prompt').value = '';
+      appendMessage('assistant', 'Thinking...');
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({prompt, emotion: detectedEmotion})
+      });
+      const data = await res.json();
+      // replace last 'Thinking...' message with answer
+      const chatbox = document.getElementById('chatbox');
+      chatbox.lastChild.remove();
+      appendMessage('assistant', data.answer || data.error || 'No response');
+    });
+
+    // Student modal toggles
+    document.getElementById('open-student').addEventListener('click', ()=>document.getElementById('student-modal').classList.remove('hidden'));
+    document.getElementById('close-student').addEventListener('click', ()=>document.getElementById('student-modal').classList.add('hidden'));
+
+    // Alpha Study ask
+    document.getElementById('ask-study').addEventListener('click', async () => {
+      const board = document.getElementById('board').value;
+      const grade = document.getElementById('grade').value;
+      const prompt = document.getElementById('study-question').value.trim();
+      if(!prompt) return alert('Ask a question first');
+      document.getElementById('study-answer').innerText = 'Thinking...';
+      const res = await fetch('/api/alpha_study', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({board, grade, prompt, emotion: detectedEmotion})
+      });
+      const data = await res.json();
+      document.getElementById('study-answer').innerText = data.answer || data.error || 'No response';
+    });
+
+    // Alpha Exam generate
+    document.getElementById('generate-exam').addEventListener('click', async () => {
+      const topic = document.getElementById('exam-topic').value || 'Exam';
+      const num = document.getElementById('exam-num').value || 10;
+      const fileEl = document.getElementById('exam-file');
+      document.getElementById('exam-output').innerText = 'Generating...';
+      if(fileEl.files.length === 0) {
+        // no file -> send JSON with short text if user provided a topic only
+        const res = await fetch('/api/generate_exam', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({text: `Topic: ${topic}`, topic, num_questions: num})
+        });
+        const data = await res.json();
+        document.getElementById('exam-output').innerText = data.exam || data.error || '';
+      } else {
+        const fd = new FormData();
+        fd.append('file', fileEl.files[0]);
+        fd.append('topic', topic);
+        fd.append('num_questions', num);
+        const res = await fetch('/api/generate_exam', {method: 'POST', body: fd});
+        const data = await res.json();
+        document.getElementById('exam-output').innerText = data.exam || data.error || '';
+      }
+    });
+
+    // Webcam emotion detection using face-api.js
+    let stream = null;
+    async function startCameraAndModels(){
+      await Promise.all([
+        faceapi.nets.tinyFaceDetector.loadFromUri('https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js/models'),
+        faceapi.nets.faceExpressionNet.loadFromUri('https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js/models')
+      ]);
+      try{
+        stream = await navigator.mediaDevices.getUserMedia({video:true});
+        video.srcObject = stream;
+        video.play();
+        detectLoop();
+      }catch(e){
+        console.error("Camera failed", e);
+        alert("Camera access denied or unavailable.");
+      }
+    }
+
+    async function detectLoop(){
+      if(!video || video.readyState !== 4) {
+        setTimeout(detectLoop, 500);
+        return;
+      }
+      const detections = await faceapi.detectSingleFace(video, new faceapi.TinyFaceDetectorOptions()).withFaceExpressions();
+      if(detections && detections.expressions){
+        const exps = detections.expressions;
+        // find the expression with highest score
+        let best = null, bestVal = 0;
+        Object.entries(exps).forEach(([k,v]) => { if(v>bestVal){ bestVal=v; best=k; }});
+        // Map to simple emotion categories we use
+        const mapping = {
+          happy:'happy', neutral:'neutral', sad:'sad', angry:'angry', surprised:'surprised', fearful:'fearful', disgusted:'disgusted'
+        };
+        detectedEmotion = mapping[best] || 'neutral';
+        detectedEl.innerText = detectedEmotion;
+      }
+      setTimeout(detectLoop, 800);
+    }
+
+    document.getElementById('start-cam').addEventListener('click', startCameraAndModels);
+    document.getElementById('stop-cam').addEventListener('click', ()=>{
+      if(stream){
+        stream.getTracks().forEach(t=>t.stop());
+        stream = null;
+      }
+      detectedEmotion = null;
+      detectedEl.innerText = '—';
+    });
+
+  </script>
+</body>
+</html>
